@@ -1,0 +1,2 @@
+# Build artifacts (contain absolute local paths — never commit)
+/target

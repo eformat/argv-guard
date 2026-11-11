@@ -1,0 +1,18 @@
+[package]
+name = "argv-guard"
+version = "0.1.0"
+edition = "2021"
+description = "LD_PRELOAD execve guard: veto command executions whose argv carries secret-shaped tokens"
+license = "MIT"
+
+[lib]
+name = "argvguard"
+crate-type = ["cdylib"]
+
+[dependencies]
+libc = "0.2"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
