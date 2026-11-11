@@ -106,6 +106,94 @@ Retro-hooking an already-running process is kernel territory — that's
 parked (eBPF LSM, see `~/.opencode/plan/argv-guard.md`), deliberately
 not built.
 
+## Proving non-collection (for auditors)
+
+Falcon's `ProcessRollup2` telemetry is generated from the *running process* —
+image + `/proc/PID/cmdline`. If no process with the curl image ever exists,
+there is nothing to report. Three local proofs and one positive control.
+
+**1. Kernel level: the exec syscall never fires.** The interception is
+userspace (libc interposition), so the kernel never even sees the attempt.
+Put the attempt in a script file first — the script's argv carries no token,
+so your armed shell doesn't veto the *tracer* instead:
+
+```sh
+printf '%s\n' 'curl -H "Authorization: Bearer ghp_ABCDEFGHIJKLMNOPQRSTUVWX" https://api.github.com' > /tmp/veto-curl.sh
+strace -f -e trace=execve,execveat -o veto-trace.txt bash /tmp/veto-curl.sh   # rc 126
+grep -c 'execve("/usr/bin/curl"' veto-trace.txt                               # → 0
+```
+
+(If you ever see a curl execve here, the shell you ran it from was not armed
+— see *Verify* above.)
+
+Positive control — same rig, real exec, proving the method can see one:
+
+```sh
+strace -f -e trace=execve,execveat -o ctrl-trace.txt \
+  bash -c 'curl -sS https://api.github.com -o /dev/null'
+grep 'execve("/usr/bin/curl"' ctrl-trace.txt   # → execve("/usr/bin/curl", …) = 0
+```
+
+**2. Process level: no curl image in /proc, ever.** A real curl lives ~200 ms
+(network round trip); hammer the veto while sampling /proc at full speed.
+Measured on the reference box: 743 attempts, 1,911 full scans, 1.19 M comm
+observations, 0 hits.
+
+```sh
+cat > /tmp/procscan.c <<'EOF'
+// procscan <needle> <seconds> — sample /proc/*/comm at max speed
+#define _GNU_SOURCE
+#include <dirent.h>
+#include <fcntl.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <time.h>
+#include <unistd.h>
+int main(int argc, char **argv) {
+    if (argc < 3) return 2;
+    struct timespec t0, now; clock_gettime(CLOCK_MONOTONIC, &t0);
+    long scans = 0, obs = 0, hits = 0;
+    for (;;) {
+        DIR *d = opendir("/proc"); if (!d) return 1;
+        struct dirent *e;
+        while ((e = readdir(d))) {
+            if (e->d_name[0] < '0' || e->d_name[0] > '9') continue;
+            char p[64]; snprintf(p, sizeof p, "/proc/%s/comm", e->d_name);
+            int fd = open(p, O_RDONLY); if (fd < 0) continue;
+            char b[64]; ssize_t n = read(fd, b, sizeof b - 1); close(fd);
+            if (n <= 0) continue; b[n] = 0; obs++;
+            if (strstr(b, argv[1])) { hits++; printf("HIT pid=%s comm=%s\n", e->d_name, b); }
+        }
+        closedir(d); scans++;
+        clock_gettime(CLOCK_MONOTONIC, &now);
+        if ((now.tv_sec - t0.tv_sec) + (now.tv_nsec - t0.tv_nsec) / 1e9 >= atof(argv[2])) break;
+    }
+    printf("full-scans=%ld comm-observations=%ld needle-hits=%ld\n", scans, obs, hits);
+    return 0;
+}
+EOF
+gcc -O2 -o /tmp/procscan /tmp/procscan.c
+/tmp/procscan curl 2 > scan-out.txt &
+end=$((SECONDS+1))
+while (( SECONDS < end )); do bash /tmp/veto-curl.sh 2>/dev/null; done
+wait; tail -1 scan-out.txt        # → full-scans=… comm-observations=… needle-hits=0
+```
+
+**3. The guard's own log** — written by the dying pre-exec child, redacted:
+
+```sh
+tail -1 ~/.local/share/argv-guard/hits.log
+# 1794372589 exe=curl pattern=bearer-token arg=2 preview=Bearer ghp_AB…
+```
+
+**Boundary of the claim**: vetoed attempts never produce a curl process — the
+forked child dies still wearing the shell's image (bash telemetry, which every
+command produces anyway). *Allowed* curls — clean argv, or `ARVGUARD_OFF=1` —
+create a real process and ship normally; that is by design. The final
+cloud-side confirmation is one glance at the CrowdStrike console for the host:
+the positive-control curl shows up; no event exists for any vetoed attempt.
+
 ## Uninstall (order matters)
 
 ```sh
