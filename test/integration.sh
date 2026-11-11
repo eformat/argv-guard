@@ -38,7 +38,10 @@ if ARVGUARD_OFF=1 LD_PRELOAD="$LIB" bash -c '/bin/true "token=ghp_ABCDEFGHIJKLMN
 else bad "bypass broken"; fi
 
 echo "== 5. multiple pattern families =="
-for t in 'oc login --token=sha256~eyJhbGciOiJSUzI1NiIsImtpZCI6' 'aws s3 ls --key AKIAIOSFODNN7EXAMPLE' 'slack-cli --tok xoxb-123456789012-abcdef' 'git push https://oauth2:glpat-abcdefghijklmnopqrst@gitlab.com/x/y' 'openai curl -H "Authorization: Bearer sk-proj-T3BlbkFJabcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJ"'; do
+# NB: the OpenAI fixture deliberately has NO sk-/sk-proj- prefix — the guard
+# fires on the T3BlbkFJ needle + tail (prefix-agnostic), and keeping the
+# provider prefix makes GitHub push protection reject the push.
+for t in 'oc login --token=sha256~eyJhbGciOiJSUzI1NiIsImtpZCI6' 'aws s3 ls --key AKIAIOSFODNN7EXAMPLE' 'slack-cli --tok xoxb-123456789012-abcdef' 'git push https://oauth2:glpat-abcdefghijklmnopqrst@gitlab.com/x/y' 'openai curl -H "Authorization: Bearer dummy-T3BlbkFJabcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJ"'; do
   if LD_PRELOAD="$LIB" bash -c "/bin/true $t" 2>&1 | grep -q BLOCKED; then
     ok "blocked: ${t:0:30}…"
   else bad "missed: $t"; fi
